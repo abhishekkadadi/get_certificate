@@ -1,0 +1,149 @@
+from ipwhois import IPWhois
+import ipaddress
+import datetime
+import csv
+from scapy.all import * # The One and Only Scapy
+from scapy.layers.inet import IP, TCP,ICMP
+from OpenSSL import SSL
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+import idna
+from collections import namedtuple
+
+SYNACK = 0x12 # Set flag values for later reference
+RSTACK = 0x14
+#############
+#23.192.0.0/11
+###################################geting Ip and finding public subnet range##############################################
+ip=socket.gethostbyname('www.overstock.com')
+obj = IPWhois(ip)
+results = obj.lookup()
+public_ip=results['nets'][0]['cidr']
+ip_list_overstock=[]
+list_of_cert=[]
+###################################geting Ip and finding public subnet range##############################################
+
+######################subnet server checking#################################################
+
+def checkhost(ip): # Function to check if target is up
+    conf.verb = 0 # Hide output
+    print("Adasd")
+    try:
+        ping = sr1(IP(dst = ip)/ICMP()) # Ping the target
+        print ("\n[*] Target is Up, Beginning Scan...")
+    except Exception: # If ping fails
+        print ("\n[!] Couldn't Resolve Target")
+        print ("[!] Exiting...")
+        return
+
+def scanport(target,port): # Function to scan a given port
+    try:
+        target=str(target)
+        print(target)
+        srcport = RandShort() # Generate Port Number
+        conf.verb = 0 # Hide output
+        SYNACKpkt = sr1(IP(dst = target)/TCP(sport = srcport, dport = port, flags = "S"),timeout=1) # Send SYN and recieve RST-ACK or SYN-ACK
+        print(SYNACKpkt)
+        try:
+            pktflags = SYNACKpkt.getlayer(TCP).flags # Extract flags of recived packet
+        except:
+            return False
+        if pktflags == SYNACK: # Cross reference Flags
+            RSTpkt = IP(dst=target) / TCP(sport=srcport, dport=port, flags="R")
+            send(RSTpkt)
+            return True # If open, return true
+        else:
+            return False # If closed, return false
+        RSTpkt = IP(dst = target)/TCP(sport = srcport, dport = port, flags = "R") # Construct RST packet
+        send(RSTpkt) # Send RST packet
+    except KeyboardInterrupt: # In case the user needs to quit
+        RSTpkt = IP(dst = target)/TCP(sport = srcport, dport = port, flags = "R") # Built RST packet
+        send(RSTpkt) # Send RST packet to whatever port is currently being scanned
+        print ("\n[*] User Requested Shutdown...")
+        print ("[*] Exiting...")
+        return False
+#######################################cert checking######################################################
+
+
+HostInfo = namedtuple(field_names='cert hostname peername', typename='HostInfo')
+
+from socket import socket
+from collections import namedtuple
+def get_certificate(hostname, port):
+    hostname_idna = idna.encode(hostname)
+    sock = socket()
+
+    sock.connect((hostname, port))
+    peername = sock.getpeername()
+    ctx = SSL.Context(SSL.SSLv23_METHOD) # most compatible
+    ctx.check_hostname = False
+    ctx.verify_mode = SSL.VERIFY_NONE
+
+    sock_ssl = SSL.Connection(ctx, sock)
+    sock_ssl.set_connect_state()
+    sock_ssl.set_tlsext_host_name(hostname_idna)
+    sock_ssl.do_handshake()
+    cert = sock_ssl.get_peer_certificate()
+    crypto_cert = cert.to_cryptography()
+    sock_ssl.close()
+    sock.close()
+
+    return HostInfo(cert=crypto_cert, peername=peername, hostname=hostname)
+def get_common_name(cert):
+    try:
+        names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        return names[0].value
+    except x509.ExtensionNotFound:
+        return None
+def get_alt_names(cert):
+    try:
+        ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        return ext.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        return None
+def get_issuer(cert):
+    try:
+        names = cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)
+        return names[0].value
+    except x509.ExtensionNotFound:
+        return None
+def print_basic_info(hostinfo):
+    hostname = hostinfo.hostname
+    date_expire=hostinfo.cert.not_valid_after
+    temp=[hostname,str(date_expire.date())]
+    list_of_cert.append(temp)
+    return
+
+#######################################cert checking ends######################################################
+net4 = ipaddress.ip_network(str(public_ip))
+m=0
+for x in net4.hosts():
+    status = scanport(x,443)
+    m=m+1
+    if status == True:  # Test result
+        ip_list_overstock.append(x)
+    if m==200:
+        break
+i=0
+for x in ip_list_overstock:
+    print('M in this loop')
+    hostinfo=get_certificate(str(x),443)
+    print_basic_info(hostinfo)
+    i=i+1
+    print(i)
+    if i==30:
+        final_list = sorted(list_of_cert, key=lambda x: datetime.strptime(x[-1], '%Y-%m-%d'))
+        with open("certs_date.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["IP ADDRESS OF CERT", "Date OF EXPIRE (Priority)"])
+            writer.writerows(final_list)
+
+# final_list=sorted(list_of_cert, key=lambda x: datetime.strptime(x[-1], '%Y-%m-%d'))
+# print(final_list)
+#
+#
+# with open("certs_date.csv", "w", newline="") as f:
+#     writer = csv.writer(f)
+#     writer.writerow(["IP ADDRESS OF CERT", "Date OF EXPIRE (Priority)"])
+#     writer.writerows(final_list)
+# print("Completed")
